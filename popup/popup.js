@@ -66,28 +66,40 @@ $('#saveRates').addEventListener('click', saveRates);
 $('#resetRates').addEventListener('click', resetRates);
 
 // --- Backlog tab ----------------------------------------------------------
+// Module-scoped cache so generatePlan can reuse what refreshBacklog fetched.
+let lastBacklog = null;
+let lastPickable = null;
+
 async function refreshBacklog() {
   const btn = $('#refreshBacklog');
   btn.disabled = true;
   $('#backlogStatus').textContent = 'Fetching Rodeo…';
   const warehouse = $('#warehouse').value.trim() || 'IND8';
   const paths = PROCESS_PATHS.map(p => p.id);
-  const resp = await send('rodeo.backlog', { warehouse, paths });
+
+  const [bl, pk] = await Promise.all([
+    send('rodeo.backlog',  { warehouse, paths }),
+    send('rodeo.pickable', { warehouse })
+  ]);
   btn.disabled = false;
 
-  if (!resp || !resp.ok) {
-    $('#backlogStatus').textContent = 'Error: ' + (resp && resp.error);
-    return;
-  }
+  if (!bl || !bl.ok) { $('#backlogStatus').textContent = 'Backlog error: ' + (bl && bl.error); return; }
+  if (!pk || !pk.ok) { $('#backlogStatus').textContent = 'Pickable error: ' + (pk && pk.error); return; }
+
+  lastBacklog  = bl.backlog;
+  lastPickable = pk.pickable;
+
   const tbody = $('#backlogTable tbody');
   tbody.innerHTML = '';
   PROCESS_PATHS.forEach(p => {
-    const entry = resp.backlog[p.id] || {};
+    const entry = lastBacklog[p.id] || {};
     const cc = entry.cartCounts || {};
     const uc = entry.unitCounts || {};
+    const pickableUnits = (lastPickable.totals && lastPickable.totals[p.id]) || 0;
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${p.label}</td>
+      <td class="num">${pickableUnits}</td>
       <td class="num">${cc.rebinReady ?? '–'}</td>
       <td class="num">${cc.rebinInProgress ?? '–'}</td>
       <td class="num">${cc.packReady ?? '–'}</td>
@@ -97,11 +109,15 @@ async function refreshBacklog() {
     tbody.appendChild(tr);
   });
   $('#backlogStatus').textContent = 'Updated ' + new Date().toLocaleTimeString();
-  return resp.backlog;
+  return { backlog: lastBacklog, pickable: lastPickable };
 }
 $('#refreshBacklog').addEventListener('click', refreshBacklog);
 
 // --- Plan tab -------------------------------------------------------------
+// Module-scoped so Post-to-Slack can reuse the last plan without re-running.
+let lastPlanInput = null;
+let lastPlanOutput = null;
+
 async function generatePlan() {
   $('#planStatus').textContent = 'Running…';
   const warehouse = $('#warehouse').value.trim() || 'IND8';
@@ -111,36 +127,73 @@ async function generatePlan() {
   const shift = $('#shift').value;
 
   const expected = await getRatesMap();
-  const backlog = await refreshBacklog();  // forces a refresh before planning
-  if (!backlog) { $('#planStatus').textContent = 'Backlog fetch failed.'; return; }
+  const fresh = await refreshBacklog();
+  if (!fresh) { $('#planStatus').textContent = 'Backlog fetch failed.'; return; }
+  const { backlog, pickable } = fresh;
 
-  // Demand per path: pick-hours comes from a separate signal we don't have
-  // yet (RFEA actionable units by path). v0.1 drives purely off the cart
-  // backlog for MultiSlam rebin/pack; other paths get a placeholder.
+  // Fetch the roster (rates + current assignment + dwell) from FCLM.
+  $('#planStatus').textContent = 'Loading roster…';
+  const rosterResp = await send('roster', { warehouse, shift });
+  const roster = (rosterResp && rosterResp.ok) ? rosterResp.roster : [];
+  if (!rosterResp || !rosterResp.ok) {
+    $('#planStatus').textContent = 'Roster warning: ' + (rosterResp && rosterResp.error);
+  }
+
+  // Demand per path. Pick demand is now real: pickable units / expected UPH.
+  // Rebin/Pack demand is carts / (carts-per-AA-per-hour), handled inside
+  // the optimizer helper. Those constants are still hardcoded (1.5, 2.0).
   const demand = {};
   for (const p of PROCESS_PATHS) {
     const e = backlog[p.id] || {};
     const cc = e.cartCounts || {};
+    const pickableUnits = (pickable.totals && pickable.totals[p.id]) || 0;
     demand[p.id] = {
-      pickAAHrs:  0,                              // TODO: wire up RFEA actionable-unit feed
-      rebinAAHrs: Optimizer ? Optimizer.aaHoursDemand({ cartsBacklog: cc.rebinReady || 0, role: 'rebin' }) : 0,
-      packAAHrs:  Optimizer ? Optimizer.aaHoursDemand({ cartsBacklog: cc.packReady  || 0, role: 'pack'  }) : 0
+      pickAAHrs:  Optimizer.aaHoursDemand({ unitsBacklog: pickableUnits, expectedUPH: expected[p.id], role: 'pick'  }),
+      rebinAAHrs: Optimizer.aaHoursDemand({ cartsBacklog: cc.rebinReady || 0, role: 'rebin' }),
+      packAAHrs:  Optimizer.aaHoursDemand({ cartsBacklog: cc.packReady  || 0, role: 'pack'  })
     };
   }
-  // Note: Optimizer lives in background context, not popup. Ask it over the wire.
 
-  const roster = []; // TODO: populate from fclm.rollup intraday for today's shift.
-
-  const resp = await send('optimize', {
-    input: { hc, hoursLeft, minDwellHrs: minDwell, demand, expected, roster }
-  });
+  const input = { hc, hoursLeft, minDwellHrs: minDwell, demand, expected, roster };
+  const resp = await send('optimize', { input });
   if (!resp || !resp.ok) { $('#planStatus').textContent = 'Optimizer error.'; return; }
 
-  const { assignments, warnings } = resp.plan;
-  renderPlan(assignments, warnings);
-  $('#planStatus').textContent = 'Plan generated.';
+  lastPlanInput = { warehouse, hc, hoursLeft, shift };
+  lastPlanOutput = resp.plan;
+
+  renderPlan(resp.plan.assignments, resp.plan.warnings);
+  $('#planStatus').textContent = `Plan generated · ${roster.length} AAs in roster.`;
 }
 $('#generatePlan').addEventListener('click', generatePlan);
+
+async function postToSlack() {
+  if (!lastPlanOutput) { $('#planStatus').textContent = 'Generate a plan first.'; return; }
+  $('#planStatus').textContent = 'Posting to Slack…';
+  const payload = Slack.formatPlanForSlack({
+    warehouse: lastPlanInput.warehouse,
+    hc:        lastPlanInput.hc,
+    hoursLeft: lastPlanInput.hoursLeft,
+    shift:     lastPlanInput.shift,
+    assignments: lastPlanOutput.assignments,
+    warnings:    lastPlanOutput.warnings,
+    backlog:     lastBacklog,
+    pickable:    lastPickable
+  });
+  const r = await send('slack.post', { payload });
+  $('#planStatus').textContent = r && r.ok ? 'Posted to Slack.' : ('Slack error: ' + (r && r.error));
+}
+$('#postSlack').addEventListener('click', postToSlack);
+
+// Slack webhook save (in the Rates tab).
+(async () => {
+  const r = await send('config.get', { key: 'slackWebhook', fallback: '' });
+  $('#slackWebhook').value = (r && r.value) || '';
+})();
+$('#saveSlack').addEventListener('click', async () => {
+  const v = $('#slackWebhook').value.trim();
+  await send('config.set', { key: 'slackWebhook', value: v });
+  $('#planStatus').textContent = 'Slack webhook saved.';
+});
 
 function renderPlan(assignments, warnings) {
   const out = $('#planOutput');

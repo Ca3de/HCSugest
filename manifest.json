@@ -17,7 +17,8 @@
     "storage",
     "tabs",
     "*://rodeo-iad.amazon.com/*",
-    "*://fclm-portal.amazon.com/*"
+    "*://fclm-portal.amazon.com/*",
+    "https://hooks.slack.com/*"
   ],
 
   "background": {
@@ -27,6 +28,7 @@
       "lib/rodeo.js",
       "lib/fclm.js",
       "lib/optimizer.js",
+      "lib/slack.js",
       "background.js"
     ],
     "persistent": false

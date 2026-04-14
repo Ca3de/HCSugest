@@ -32,26 +32,30 @@ This extension fixes both by:
 4. Be signed into Midway in the same browser profile — all fetches use
    `credentials: 'include'`.
 
-## What works in v0.1
+## What works
 
-- Rates tab: edit and persist weekly expected UPH per path (seeded from the
-  workbook's D column).
-- Backlog tab: hits Rodeo and shows cart counts per path.
-- Debug tab: ping, FCLM rollup smoke test.
-- Plan tab: runs the v0.1 optimizer over the backlog.
+- **Rates tab** — edit and persist weekly expected UPH per path (seeded from
+  the workbook's D column). Also where the Slack webhook URL is saved.
+- **Backlog tab** — hits Rodeo and shows per-path:
+  - Pre-pick pickable units (from `/IND8/ExSD` pivot across `ReadyToPick` +
+    `PickingNotYetPicked` + `CrossdockNotYetPicked`).
+  - Rebin-ready carts, rebin-in-progress, pack-ready carts (from `/IND8/ItemList`
+    batch classification via scannable-ID prefix).
+  - Pagination: 1000 per page, follows `pager.CUSTOMER_SHIPMENTS.currentPage`.
+- **Plan tab** — pulls the live roster (FCLM `functionRollup` Intraday across
+  Pick/Pack/Stow, enriched per-AA with `timeDetails` Gantt for
+  current-subFunction + dwell time), runs the optimizer, renders assignments,
+  and posts to Slack on demand.
+- **Debug tab** — ping, FCLM rollup smoke test.
 
-## What's stubbed
+## What's still hard-coded / TODO
 
-- Roster feed. The plan tab produces assignments only when populated; v0.1
-  passes an empty roster so you'll see the capacity warnings but no AA rows
-  until `fclm.rollup` intraday is wired into the popup.
-- `demand.pickAAHrs` — needs the RFEA actionable-unit feed. QuickSight's
-  Total Pending Customer Shipments export is the source today; we'll hit the
-  underlying Rodeo/Quetzal query once we nail the URL.
-- Cart-per-AA-hour rates for Rebin and Pack are currently hard-coded at 1.5
-  and 2.0. Replace with learned values from FCLM Rebin/Pack sub-functions.
-- Rodeo pool queries are single-page. Pagination loop is a TODO marked
-  in `lib/rodeo.js`.
+- Cart-per-AA-hour rates for Rebin (1.5) and Pack (2.0) in `lib/optimizer.js`.
+  Replace with learned values from FCLM Rebin/Pack sub-function UPH divided
+  by observed units-per-cart (snapshotted per Refresh, rolling mean).
+- Per-AA p20/p50/p80 rate distribution is currently just the rollup UPH for
+  the current shift. Needs a multi-day history pull to be meaningful.
+- Optimizer is greedy with dwell-lock. Swap for an ILP when the inputs stabilize.
 
 ## Layout
 
