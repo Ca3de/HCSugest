@@ -65,15 +65,25 @@
 <!-- Rates tab ------------------------------------------------------------ -->
 <section class="tab-panel" data-panel="rates">
   <p class="muted">
-    Weekly expected UPH per path. Seeded from IND8 Pick Staffing v1.9.
-    Overrides are saved locally until a rates API is wired up.
+    Weekly expected UPH per path per role. Pick seeds from the IND8 Pick
+    Staffing v1.9 workbook; Rebin and Pack (MultiSlam + Single only) start
+    empty — fill them in or pull from FCLM.
   </p>
   <table id="ratesTable">
-    <thead><tr><th>Path</th><th>Expected UPH</th></tr></thead>
+    <thead><tr>
+      <th>Path</th>
+      <th class="num">Pick UPH</th>
+      <th class="num">Rebin UPH</th>
+      <th class="num">Pack UPH</th>
+    </tr></thead>
     <tbody></tbody>
   </table>
-  <button id="saveRates">Save rates</button>
-  <button id="resetRates" class="secondary">Reset to defaults</button>
+  <div class="row">
+    <button id="saveRates">Save rates</button>
+    <button id="resetRates" class="secondary">Reset to defaults</button>
+    <button id="pullWeekly" class="secondary">Pull weekly rates from FCLM</button>
+  </div>
+  <div id="weeklyRatesOut"></div>
 
   <hr>
   <p class="muted">

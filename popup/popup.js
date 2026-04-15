@@ -22,28 +22,43 @@ $$('.tab').forEach(tab => {
 });
 
 // --- Rates tab ------------------------------------------------------------
+//
+// Storage shape: { pick: {pathId: uph}, rebin: {pathId: uph}, pack: {pathId: uph} }.
+// Only MultiSlam + Single have Rebin/Pack columns enabled (see paths.js).
+
+async function loadRates() {
+  const resp = await send('config.get', { key: 'rates', fallback: null });
+  return migrateRates(resp && resp.value) || emptyRatesMap();
+}
+
 async function renderRates() {
-  const stored = await send('config.get', { key: 'rates', fallback: null });
+  const rates = await loadRates();
   const tbody = $('#ratesTable tbody');
   tbody.innerHTML = '';
   PROCESS_PATHS.forEach(p => {
-    const current = (stored && stored.value && stored.value[p.id] != null)
-      ? stored.value[p.id] : p.defaultRate;
+    const pick  = rates.pick[p.id]  != null ? rates.pick[p.id]  : p.defaultRate;
+    const rebin = rates.rebin[p.id] != null ? rates.rebin[p.id] : '';
+    const pack  = rates.pack[p.id]  != null ? rates.pack[p.id]  : '';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${p.label} <span class="muted">${p.id}</span></td>
-      <td class="num"><input type="number" step="0.5" min="1" data-path="${p.id}" value="${current}"></td>
+      <td class="num"><input type="number" step="0.5" min="0" data-role="pick"  data-path="${p.id}" value="${pick}"></td>
+      <td class="num"><input type="number" step="0.5" min="0" data-role="rebin" data-path="${p.id}" value="${rebin}" ${p.usesRebin ? '' : 'disabled'}></td>
+      <td class="num"><input type="number" step="0.5" min="0" data-role="pack"  data-path="${p.id}" value="${pack}"  ${p.usesPack  ? '' : 'disabled'}></td>
     `;
     tbody.appendChild(tr);
   });
 }
 
 async function saveRates() {
-  const map = {};
+  const rates = emptyRatesMap();
   $$('#ratesTable input').forEach(inp => {
-    map[inp.dataset.path] = parseFloat(inp.value) || 0;
+    if (inp.disabled) return;
+    const v = parseFloat(inp.value);
+    if (!Number.isFinite(v) || v <= 0) return;
+    rates[inp.dataset.role][inp.dataset.path] = v;
   });
-  await send('config.set', { key: 'rates', value: map });
+  await send('config.set', { key: 'rates', value: rates });
   $('#planStatus').textContent = 'Rates saved.';
 }
 
@@ -52,18 +67,62 @@ async function resetRates() {
   await renderRates();
 }
 
+// Rate map consumed by the optimizer: every path gets a pick UPH (defaulted
+// from the workbook), rebin/pack are populated only where set.
 async function getRatesMap() {
-  const resp = await send('config.get', { key: 'rates', fallback: null });
-  const stored = resp && resp.value;
-  const map = {};
-  PROCESS_PATHS.forEach(p => {
-    map[p.id] = (stored && stored[p.id] != null) ? stored[p.id] : p.defaultRate;
-  });
-  return map;
+  const rates = await loadRates();
+  const out = { pick: {}, rebin: {}, pack: {} };
+  for (const p of PROCESS_PATHS) {
+    out.pick[p.id]  = rates.pick[p.id]  != null ? rates.pick[p.id]  : p.defaultRate;
+    if (p.usesRebin && rates.rebin[p.id] != null) out.rebin[p.id] = rates.rebin[p.id];
+    if (p.usesPack  && rates.pack[p.id]  != null) out.pack[p.id]  = rates.pack[p.id];
+  }
+  return out;
+}
+
+// Pull fleet UPH from FCLM Week rollup for Pick + Pack parents and display
+// the raw subFunction → UPH list. User copies numbers into the right fields.
+async function pullWeeklyRates() {
+  $('#weeklyRatesOut').innerHTML = '<p class="muted">Fetching weekly rollup…</p>';
+  const warehouse = $('#warehouse').value.trim() || 'IND8';
+  const parents = [
+    { id: FCLM_PROCESS_IDS.PICK, label: 'Pick (1003034)' },
+    { id: FCLM_PROCESS_IDS.PACK, label: 'Pack (1003056)' }
+  ];
+  const blocks = [];
+  for (const parent of parents) {
+    const r = await send('fclm.weekly', { warehouse, processId: parent.id });
+    if (!r || !r.ok) {
+      blocks.push(`<p class="warning">Failed ${parent.label}: ${r && r.error}</p>`);
+      continue;
+    }
+    // Aggregate fleet UPH per subFunction: sum(units) / sum(hours).
+    const agg = {};
+    for (const row of r.rows) {
+      const sf = row.subFunction || '(unknown)';
+      const slot = agg[sf] ||= { units: 0, hours: 0, n: 0 };
+      slot.units += row.units || 0;
+      slot.hours += row.hours || 0;
+      slot.n++;
+    }
+    const sfRows = Object.entries(agg)
+      .map(([sf, v]) => ({ sf, uph: v.hours > 0 ? v.units / v.hours : 0, n: v.n }))
+      .sort((a, b) => b.uph - a.uph);
+    const body = sfRows.map(x =>
+      `<tr><td>${x.sf}</td><td class="num">${x.uph.toFixed(1)}</td><td class="num muted">${x.n}</td></tr>`
+    ).join('');
+    blocks.push(`
+      <h4 style="margin:10px 0 4px;">${parent.label}</h4>
+      <table><thead><tr><th>Sub-function</th><th class="num">Fleet UPH</th><th class="num">AAs</th></tr></thead>
+      <tbody>${body || '<tr><td colspan=3 class="muted">no rows</td></tr>'}</tbody></table>
+    `);
+  }
+  $('#weeklyRatesOut').innerHTML = blocks.join('');
 }
 
 $('#saveRates').addEventListener('click', saveRates);
 $('#resetRates').addEventListener('click', resetRates);
+$('#pullWeekly').addEventListener('click', pullWeeklyRates);
 
 // --- Backlog tab ----------------------------------------------------------
 // Module-scoped cache so generatePlan can reuse what refreshBacklog fetched.
@@ -139,24 +198,41 @@ async function generatePlan() {
     $('#planStatus').textContent = 'Roster warning: ' + (rosterResp && rosterResp.error);
   }
 
-  // Demand per path. Pick demand is now real: pickable units / expected UPH.
-  // Rebin/Pack demand is carts / (carts-per-AA-per-hour), handled inside
-  // the optimizer helper. Those constants are still hardcoded (1.5, 2.0).
+  // Demand per path per role. Unit-based for all three roles:
+  //   demandAAHrs = unitsInReadyBacklog / expectedUPH[role][path]
+  // Cart classification already filtered to units in closed/ready carts.
+  // If a role UPH is missing, aaHoursDemand returns null -> warn the user
+  // instead of silently making the rebin/pack demand zero.
   const demand = {};
+  const missing = [];
   for (const p of PROCESS_PATHS) {
-    const e = backlog[p.id] || {};
-    const cc = e.cartCounts || {};
+    const e  = backlog[p.id] || {};
+    const uc = e.unitCounts || {};
     const pickableUnits = (pickable.totals && pickable.totals[p.id]) || 0;
+
+    const pickHrs  = Optimizer.aaHoursDemand({ unitsBacklog: pickableUnits,        expectedUPH: expected.pick[p.id],  role: 'pick'  });
+    const rebinHrs = p.usesRebin ? Optimizer.aaHoursDemand({ unitsBacklog: uc.rebinReady || 0, expectedUPH: expected.rebin[p.id], role: 'rebin' }) : 0;
+    const packHrs  = p.usesPack  ? Optimizer.aaHoursDemand({ unitsBacklog: uc.packReady  || 0, expectedUPH: expected.pack[p.id],  role: 'pack'  }) : 0;
+
+    if (rebinHrs === null) missing.push(`${p.label} rebin`);
+    if (packHrs  === null) missing.push(`${p.label} pack`);
+
     demand[p.id] = {
-      pickAAHrs:  Optimizer.aaHoursDemand({ unitsBacklog: pickableUnits, expectedUPH: expected[p.id], role: 'pick'  }),
-      rebinAAHrs: Optimizer.aaHoursDemand({ cartsBacklog: cc.rebinReady || 0, role: 'rebin' }),
-      packAAHrs:  Optimizer.aaHoursDemand({ cartsBacklog: cc.packReady  || 0, role: 'pack'  })
+      pickAAHrs:  pickHrs  || 0,
+      rebinAAHrs: (rebinHrs === null) ? 0 : rebinHrs,
+      packAAHrs:  (packHrs  === null) ? 0 : packHrs
     };
   }
 
-  const input = { hc, hoursLeft, minDwellHrs: minDwell, demand, expected, roster };
+  // The optimizer only cares about pick UPH for AA selection; rebin/pack
+  // rates already went into demand. Flatten expected.pick for the picker.
+  const input = { hc, hoursLeft, minDwellHrs: minDwell, demand, expected: expected.pick, roster };
   const resp = await send('optimize', { input });
   if (!resp || !resp.ok) { $('#planStatus').textContent = 'Optimizer error.'; return; }
+
+  if (missing.length) {
+    resp.plan.warnings.unshift(`Missing role rate(s): ${missing.join(', ')} — demand for these was set to 0.`);
+  }
 
   lastPlanInput = { warehouse, hc, hoursLeft, shift };
   lastPlanOutput = resp.plan;

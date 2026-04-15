@@ -103,6 +103,24 @@ async function handle(msg) {
       return { ok: true, rows };
     }
 
+    case 'fclm.weekly': {
+      // Week rollup for a parent process. Range is the current ISO week
+      // (Sunday-anchored) per FCLM convention; startDateWeek is the anchor.
+      const now = new Date();
+      const sunday = new Date(now);
+      sunday.setDate(sunday.getDate() - sunday.getDay());
+      sunday.setHours(0, 0, 0, 0);
+      const nextSunday = new Date(sunday);
+      nextSunday.setDate(sunday.getDate() + 7);
+      const rows = await FCLM.fetchFunctionRollup({
+        warehouseId: msg.warehouse,
+        processId:   msg.processId,
+        spanType:    'Week',
+        range: { startDate: sunday, endDate: nextSunday, startHour: 0, endHour: 0 }
+      });
+      return { ok: true, rows };
+    }
+
     case 'fclm.timeDetails': {
       const range = msg.range || FCLM.shiftRange(msg.shift || 'day');
       const segments = await FCLM.fetchTimeDetails({
