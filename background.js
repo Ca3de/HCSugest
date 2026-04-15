@@ -83,23 +83,31 @@ async function runPlanJob({ warehouse, hc, hoursLeft, minDwell, shift, expected 
       } catch (e) { return []; }
     }));
     const allRows = parentResults.flat();
-    const byLogin = {};
+    // functionRollup exposes badgeId, not login. Key the roster by badge.
+    // (timeDetails also accepts employeeId/badge, so this is the right key.)
+    const byBadge = {};
     for (const r of allRows) {
-      if (!r.login) continue;
-      const slot = byLogin[r.login] ||= { login: r.login, badge: r.badgeId || r.employeeId, name: r.name, rates: {} };
-      if (!slot.badge && r.badgeId) slot.badge = r.badgeId;
+      const badge = r.badgeId || r.employeeId;
+      if (!badge) continue;
+      const slot = byBadge[badge] ||= {
+        login: r.login || null,
+        badge,
+        name: r.name || badge,
+        rates: {}
+      };
       slot.rates[r.subFunction] = { p50: r.uph, units: r.units, hours: r.hours };
     }
-    const logins = Object.keys(byLogin);
-    await write(`Fetching timeDetails for ${logins.length} AAs…`);
+    const roster0 = Object.values(byBadge);
+    await write(`Fetching timeDetails for ${roster0.length} AAs…`);
     const CHUNK = 4;
-    for (let i = 0; i < logins.length; i += CHUNK) {
-      const batch = logins.slice(i, i + CHUNK);
-      await Promise.all(batch.map(async login => {
-        const slot = byLogin[login];
-        if (!slot.badge) return;
+    for (let i = 0; i < roster0.length; i += CHUNK) {
+      const batch = roster0.slice(i, i + CHUNK);
+      await Promise.all(batch.map(async slot => {
         try {
-          const { segments } = await FCLM.fetchTimeDetails({ warehouseId: warehouse, employeeId: slot.badge, range });
+          const { segments, employee } = await FCLM.fetchTimeDetails({
+            warehouseId: warehouse, employeeId: slot.badge, range
+          });
+          if (employee && employee.login) slot.login = employee.login;
           const cur = FCLM.currentAssignment(segments);
           if (cur) {
             slot.currentPath = cur.subFunction;
@@ -109,9 +117,9 @@ async function runPlanJob({ warehouse, hc, hoursLeft, minDwell, shift, expected 
           }
         } catch (e) { slot.error = String(e); }
       }));
-      await write(`Fetching timeDetails… ${Math.min(i + CHUNK, logins.length)}/${logins.length}`);
+      await write(`Fetching timeDetails… ${Math.min(i + CHUNK, roster0.length)}/${roster0.length}`);
     }
-    const roster = Object.values(byLogin);
+    const roster = roster0;
 
     // 3. Build demand + run optimizer.
     await write('Running optimizer…');
@@ -153,6 +161,15 @@ async function handle(msg) {
   switch (msg.type) {
     case 'ping':
       return { ok: true, at: Date.now() };
+
+    case 'fetchRaw': {
+      // Re-fetch an arbitrary URL with user's credentials. Used by the Debug
+      // tab's "Re-fetch full response" button when the 16 KB preview
+      // wasn't enough to diagnose a parser issue.
+      const res = await fetch(msg.url, { credentials: 'include' });
+      const body = await res.text();
+      return { ok: res.ok, status: res.status, body };
+    }
 
     // Fire-and-forget jobs. We start the task without awaiting so the
     // response returns immediately; the UI watches storage for updates.

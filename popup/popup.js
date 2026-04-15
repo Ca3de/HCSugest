@@ -234,14 +234,44 @@ async function renderSamples() {
       : looksLikeLogin
         ? '<span class="warning" style="display:inline-block">Looks like a Midway login page — re-auth to FCLM/Rodeo in a normal tab first.</span>'
         : '';
+    // Download the preview (first 16 KB) as an .html file. For the full
+    // response we'd need to re-fetch; the preview still contains the data
+    // tables for Rodeo results < 16 KB and is usually enough to diagnose.
+    const dataUrl = 'data:text/html;charset=utf-8,' + encodeURIComponent(s.preview || '');
+    const filename = `hc-${s.kind}.html`;
     return `
       <details style="margin-bottom:8px;">
         <summary><strong>${escapeHtml(s.kind)}</strong> · ${s.status} · ${s.size}b · ${age}s ago ${warnBadge}</summary>
         <p class="muted" style="word-break:break-all">${escapeHtml(s.url)}</p>
+        <p><a href="${dataUrl}" download="${filename}">Download preview (.html)</a>
+           · <button data-refetch="${i}" class="secondary" style="padding:2px 8px;font-size:11px">Re-fetch full response</button></p>
         ${summary}
         <pre>${escapeHtml((s.preview || '').slice(0, 4000))}</pre>
       </details>`;
   }).join('');
+
+  // Wire up re-fetch buttons. They re-hit the same URL and dump the full
+  // response as a downloadable file (bypassing the 16 KB preview cap).
+  out.querySelectorAll('button[data-refetch]').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const i = parseInt(btn.dataset.refetch, 10);
+      const s = samples[i];
+      if (!s) return;
+      btn.disabled = true;
+      btn.textContent = 'Fetching…';
+      const r = await send('fetchRaw', { url: s.url });
+      btn.disabled = false;
+      btn.textContent = 'Re-fetch full response';
+      if (!r || !r.ok) { alert('Fetch failed: ' + (r && r.error)); return; }
+      const blob = new Blob([r.body], { type: 'text/html' });
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = `hc-${s.kind}-full.html`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+    });
+  });
 }
 
 $('#refreshSamples').addEventListener('click', renderSamples);
