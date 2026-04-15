@@ -46,8 +46,9 @@
 
   "web_accessible_resources": [
     "dashboard/dashboard.html",
-    "dashboard/dashboard.css",
-    "dashboard/dashboard.js"
+    "popup/popup.html",
+    "popup/popup.css",
+    "popup/popup.js"
   ],
 
   "icons": {

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <title>HC Suggest</title>
-<link rel="stylesheet" href="dashboard.css">
+<link rel="stylesheet" href="../popup/popup.css">
 </head>
 <body class="fullpage">
 
@@ -88,8 +88,8 @@
 
   <hr>
   <p class="muted">
-    Slack integration. Paste an Incoming Webhook URL from your workspace;
-    the "Post to Slack" button on the Plan tab sends the current plan.
+    Slack integration. Paste an Incoming Webhook URL; "Post to Slack" on
+    the Plan tab sends the current plan.
   </p>
   <div class="row">
     <label style="flex:1;">Webhook URL
@@ -104,6 +104,7 @@
   <div class="row">
     <button id="pingBg">Ping background</button>
     <button id="testFCLM">Test FCLM rollup (Pick)</button>
+    <button id="clearCache" class="secondary">Clear cached snapshot</button>
   </div>
   <pre id="debugOut"></pre>
 </section>
@@ -111,6 +112,6 @@
 <script src="../lib/paths.js"></script>
 <script src="../lib/optimizer.js"></script>
 <script src="../lib/slack.js"></script>
-<script src="dashboard.js"></script>
+<script src="../popup/popup.js"></script>
 </body>
 </html>

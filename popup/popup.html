@@ -3,20 +3,116 @@
 <head>
 <meta charset="utf-8">
 <title>HC Suggest</title>
-<style>
-  html,body { margin:0; padding:0; font: 13px/1.4 -apple-system,"Segoe UI",Roboto,sans-serif; width: 260px; }
-  .box { padding: 12px 14px; }
-  h1 { margin: 0 0 4px; font-size: 14px; }
-  p.muted { margin: 0 0 10px; color: #666; font-size: 12px; }
-  button { font: inherit; padding: 7px 12px; border: 1px solid #2a6df4; background: #2a6df4; color: white; border-radius: 4px; cursor: pointer; width: 100%; }
-</style>
+<link rel="stylesheet" href="popup.css">
 </head>
-<body>
-<div class="box">
+<body class="popup">
+
+<header>
   <h1>HC Suggest</h1>
-  <p class="muted">Plans take ~30–90 s. Popups close when Firefox loses focus, so the real UI runs in a tab.</p>
-  <button id="open">Open dashboard</button>
-</div>
+  <span id="shiftPill" class="pill">Day · IND8</span>
+  <a id="openTab" href="#" title="Open in full tab" class="tab-launch">⤢</a>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="plan">Plan</button>
+  <button class="tab" data-tab="backlog">Backlog</button>
+  <button class="tab" data-tab="rates">Rates</button>
+  <button class="tab" data-tab="debug">Debug</button>
+</nav>
+
+<!-- Plan tab ------------------------------------------------------------- -->
+<section class="tab-panel active" data-panel="plan">
+  <div class="row">
+    <label>Warehouse <input id="warehouse" type="text" value="IND8" size="5"></label>
+    <label>HC <input id="hc" type="number" value="25" min="1" max="200"></label>
+    <label>Hours left <input id="hoursLeft" type="number" value="8" min="1" max="12" step="0.5"></label>
+    <label>Shift
+      <select id="shift">
+        <option value="day" selected>Day (06-18)</option>
+        <option value="night">Night (18-06)</option>
+      </select>
+    </label>
+    <label>Min dwell (h) <input id="minDwell" type="number" value="5" min="0" max="10" step="0.5"></label>
+  </div>
+  <div class="row">
+    <button id="generatePlan">Generate plan</button>
+    <button id="postSlack" class="secondary">Post to Slack</button>
+    <span id="planStatus" class="muted"></span>
+  </div>
+  <div id="planProgress" class="progress"></div>
+  <div id="planOutput"></div>
+  <div id="planWarnings"></div>
+</section>
+
+<!-- Backlog tab ---------------------------------------------------------- -->
+<section class="tab-panel" data-panel="backlog">
+  <div class="row">
+    <button id="refreshBacklog">Refresh from Rodeo</button>
+    <span id="backlogStatus" class="muted"></span>
+  </div>
+  <table id="backlogTable">
+    <thead><tr>
+      <th>Path</th>
+      <th class="num">Pickable units</th>
+      <th class="num">Rebin-ready carts</th>
+      <th class="num">Rebin in-progress</th>
+      <th class="num">Pack-ready carts</th>
+      <th class="num">Rebin units</th>
+      <th class="num">Pack units</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<!-- Rates tab ------------------------------------------------------------ -->
+<section class="tab-panel" data-panel="rates">
+  <p class="muted">
+    Weekly expected UPH per path per role. Pick seeds from the IND8 Pick
+    Staffing v1.9 workbook; Rebin and Pack (MultiSlam + Single only) start
+    empty — fill them in or pull from FCLM.
+  </p>
+  <table id="ratesTable">
+    <thead><tr>
+      <th>Path</th>
+      <th class="num">Pick UPH</th>
+      <th class="num">Rebin UPH</th>
+      <th class="num">Pack UPH</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="row">
+    <button id="saveRates">Save rates</button>
+    <button id="resetRates" class="secondary">Reset to defaults</button>
+    <button id="pullWeekly" class="secondary">Pull weekly rates from FCLM</button>
+  </div>
+  <div id="weeklyRatesOut"></div>
+
+  <hr>
+  <p class="muted">
+    Slack integration. Paste an Incoming Webhook URL; "Post to Slack" on
+    the Plan tab sends the current plan.
+  </p>
+  <div class="row">
+    <label style="flex:1;">Webhook URL
+      <input id="slackWebhook" type="text" placeholder="https://hooks.slack.com/services/…" style="width:100%;">
+    </label>
+  </div>
+  <button id="saveSlack">Save webhook</button>
+</section>
+
+<!-- Debug tab ------------------------------------------------------------ -->
+<section class="tab-panel" data-panel="debug">
+  <div class="row">
+    <button id="pingBg">Ping background</button>
+    <button id="testFCLM">Test FCLM rollup (Pick)</button>
+    <button id="clearCache" class="secondary">Clear cached snapshot</button>
+  </div>
+  <pre id="debugOut"></pre>
+</section>
+
+<script src="../lib/paths.js"></script>
+<script src="../lib/optimizer.js"></script>
+<script src="../lib/slack.js"></script>
 <script src="popup.js"></script>
 </body>
 </html>
