@@ -1,5 +1,10 @@
-// Popup controller. No data work happens here; the popup asks the background
-// worker for everything via runtime.sendMessage.
+// Shared UI controller for popup and fullpage dashboard.
+//
+// Architecture: the popup is STATELESS. It fires commands at the background
+// ("start a refresh", "start a plan"), which writes to storage.local as it
+// progresses. The UI re-renders whenever storage.onChanged fires. Close the
+// popup at any time — work keeps going, and reopening shows the latest
+// state with no loss. The fullpage tab uses this exact same code.
 
 const api = (typeof browser !== 'undefined') ? browser : chrome;
 const $  = (sel) => document.querySelector(sel);
@@ -11,7 +16,7 @@ function send(type, extra = {}) {
   });
 }
 
-// --- Tabs -----------------------------------------------------------------
+// ------------------------------------------------------------------ Tabs
 $$('.tab').forEach(tab => {
   tab.addEventListener('click', () => {
     $$('.tab').forEach(t => t.classList.remove('active'));
@@ -21,11 +26,25 @@ $$('.tab').forEach(tab => {
   });
 });
 
-// --- Rates tab ------------------------------------------------------------
-//
-// Storage shape: { pick: {pathId: uph}, rebin: {pathId: uph}, pack: {pathId: uph} }.
-// Only MultiSlam + Single have Rebin/Pack columns enabled (see paths.js).
+// ------------------------------------------------------------ "Open in tab"
+// From the popup, open the fullpage dashboard (or focus an existing one).
+const FULLPAGE_URL = api.runtime.getURL('dashboard/dashboard.html');
+const openTabLink = $('#openTab');
+if (openTabLink) {
+  openTabLink.addEventListener('click', async (e) => {
+    e.preventDefault();
+    const tabs = await new Promise(r => api.tabs.query({ url: FULLPAGE_URL }, r));
+    if (tabs && tabs.length) {
+      api.tabs.update(tabs[0].id, { active: true });
+      api.windows && api.windows.update(tabs[0].windowId, { focused: true });
+    } else {
+      api.tabs.create({ url: FULLPAGE_URL });
+    }
+    window.close();
+  });
+}
 
+// ------------------------------------------------------------------ Rates
 async function loadRates() {
   const resp = await send('config.get', { key: 'rates', fallback: null });
   return migrateRates(resp && resp.value) || emptyRatesMap();
@@ -59,7 +78,7 @@ async function saveRates() {
     rates[inp.dataset.role][inp.dataset.path] = v;
   });
   await send('config.set', { key: 'rates', value: rates });
-  $('#planStatus').textContent = 'Rates saved.';
+  flashStatus('Rates saved.');
 }
 
 async function resetRates() {
@@ -67,21 +86,6 @@ async function resetRates() {
   await renderRates();
 }
 
-// Rate map consumed by the optimizer: every path gets a pick UPH (defaulted
-// from the workbook), rebin/pack are populated only where set.
-async function getRatesMap() {
-  const rates = await loadRates();
-  const out = { pick: {}, rebin: {}, pack: {} };
-  for (const p of PROCESS_PATHS) {
-    out.pick[p.id]  = rates.pick[p.id]  != null ? rates.pick[p.id]  : p.defaultRate;
-    if (p.usesRebin && rates.rebin[p.id] != null) out.rebin[p.id] = rates.rebin[p.id];
-    if (p.usesPack  && rates.pack[p.id]  != null) out.pack[p.id]  = rates.pack[p.id];
-  }
-  return out;
-}
-
-// Pull fleet UPH from FCLM Week rollup for Pick + Pack parents and display
-// the raw subFunction → UPH list. User copies numbers into the right fields.
 async function pullWeeklyRates() {
   $('#weeklyRatesOut').innerHTML = '<p class="muted">Fetching weekly rollup…</p>';
   const warehouse = $('#warehouse').value.trim() || 'IND8';
@@ -96,7 +100,6 @@ async function pullWeeklyRates() {
       blocks.push(`<p class="warning">Failed ${parent.label}: ${r && r.error}</p>`);
       continue;
     }
-    // Aggregate fleet UPH per subFunction: sum(units) / sum(hours).
     const agg = {};
     for (const row of r.rows) {
       const sf = row.subFunction || '(unknown)';
@@ -120,44 +123,163 @@ async function pullWeeklyRates() {
   $('#weeklyRatesOut').innerHTML = blocks.join('');
 }
 
+async function getRatesMap() {
+  const rates = await loadRates();
+  const out = { pick: {}, rebin: {}, pack: {} };
+  for (const p of PROCESS_PATHS) {
+    out.pick[p.id] = rates.pick[p.id] != null ? rates.pick[p.id] : p.defaultRate;
+    if (p.usesRebin && rates.rebin[p.id] != null) out.rebin[p.id] = rates.rebin[p.id];
+    if (p.usesPack  && rates.pack[p.id]  != null) out.pack[p.id]  = rates.pack[p.id];
+  }
+  return out;
+}
+
 $('#saveRates').addEventListener('click', saveRates);
 $('#resetRates').addEventListener('click', resetRates);
 $('#pullWeekly').addEventListener('click', pullWeeklyRates);
 
-// --- Backlog tab ----------------------------------------------------------
-// Module-scoped cache so generatePlan can reuse what refreshBacklog fetched.
-let lastBacklog = null;
-let lastPickable = null;
+// --------------------------------------------------------------- Slack cfg
+(async () => {
+  const r = await send('config.get', { key: 'slackWebhook', fallback: '' });
+  $('#slackWebhook').value = (r && r.value) || '';
+})();
+$('#saveSlack').addEventListener('click', async () => {
+  const v = $('#slackWebhook').value.trim();
+  await send('config.set', { key: 'slackWebhook', value: v });
+  flashStatus('Slack webhook saved.');
+});
+
+// ---------------------------------------------------------- Fire commands
+// Commands return IMMEDIATELY from the background. The actual work runs
+// async and writes progress + results to storage.local.
 
 async function refreshBacklog() {
-  const btn = $('#refreshBacklog');
-  btn.disabled = true;
-  $('#backlogStatus').textContent = 'Fetching Rodeo…';
   const warehouse = $('#warehouse').value.trim() || 'IND8';
   const paths = PROCESS_PATHS.map(p => p.id);
+  const r = await send('job.startRefresh', { warehouse, paths });
+  if (!r || !r.ok) flashStatus('Failed to start: ' + (r && r.error));
+}
 
-  const [bl, pk] = await Promise.all([
-    send('rodeo.backlog',  { warehouse, paths }),
-    send('rodeo.pickable', { warehouse })
-  ]);
-  btn.disabled = false;
+async function generatePlan() {
+  const warehouse = $('#warehouse').value.trim() || 'IND8';
+  const hc = parseInt($('#hc').value, 10);
+  const hoursLeft = parseFloat($('#hoursLeft').value);
+  const minDwell = parseFloat($('#minDwell').value);
+  const shift = $('#shift').value;
+  const expected = await getRatesMap();
+  const r = await send('job.startPlan', {
+    warehouse, hc, hoursLeft, minDwell, shift, expected
+  });
+  if (!r || !r.ok) flashStatus('Failed to start: ' + (r && r.error));
+}
 
-  if (!bl || !bl.ok) { $('#backlogStatus').textContent = 'Backlog error: ' + (bl && bl.error); return; }
-  if (!pk || !pk.ok) { $('#backlogStatus').textContent = 'Pickable error: ' + (pk && pk.error); return; }
+async function postToSlack() {
+  const snap = await savedGet('snapshot');
+  const plan = await savedGet('lastPlan');
+  if (!plan || !plan.output) { flashStatus('Generate a plan first.'); return; }
+  const payload = Slack.formatPlanForSlack({
+    warehouse: plan.input.warehouse,
+    hc:        plan.input.hc,
+    hoursLeft: plan.input.hoursLeft,
+    shift:     plan.input.shift,
+    assignments: plan.output.assignments,
+    warnings:    plan.output.warnings,
+    backlog:     snap && snap.backlog,
+    pickable:    snap && snap.pickable
+  });
+  const r = await send('slack.post', { payload });
+  flashStatus(r && r.ok ? 'Posted to Slack.' : ('Slack error: ' + (r && r.error)));
+}
 
-  lastBacklog  = bl.backlog;
-  lastPickable = pk.pickable;
+$('#refreshBacklog').addEventListener('click', refreshBacklog);
+$('#generatePlan').addEventListener('click', generatePlan);
+$('#postSlack').addEventListener('click', postToSlack);
 
+// ---------------------------------------------------------- Debug buttons
+$('#pingBg').addEventListener('click', async () => {
+  const r = await send('ping');
+  $('#debugOut').textContent = JSON.stringify(r, null, 2);
+});
+$('#testFCLM').addEventListener('click', async () => {
+  const warehouse = $('#warehouse').value.trim() || 'IND8';
+  const shift = $('#shift').value;
+  const r = await send('fclm.rollup', {
+    warehouse, processId: FCLM_PROCESS_IDS.PICK, spanType: 'Intraday', shift
+  });
+  $('#debugOut').textContent = JSON.stringify(r, null, 2).slice(0, 4000);
+});
+$('#clearCache').addEventListener('click', async () => {
+  await send('config.set', { key: 'snapshot', value: null });
+  await send('config.set', { key: 'lastPlan', value: null });
+  await send('config.set', { key: 'job', value: null });
+  flashStatus('Cache cleared.');
+  await renderFromStorage();
+});
+
+// --------------------------------------------------- Render from storage
+// Single source of truth: storage.local. Called on page load, and on any
+// storage.onChanged for our keys.
+async function savedGet(key) {
+  const r = await send('config.get', { key, fallback: null });
+  return r && r.value;
+}
+
+function setProgress(text, spinning = false) {
+  const el = $('#planProgress');
+  if (!el) return;
+  if (!text) { el.classList.remove('active'); el.textContent = ''; return; }
+  el.classList.add('active');
+  el.innerHTML = (spinning ? '<span class="spinner"></span>' : '') + escapeHtml(text);
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+
+let _flashTimer = null;
+function flashStatus(msg) {
+  const el = $('#planStatus');
+  if (!el) return;
+  el.textContent = msg;
+  clearTimeout(_flashTimer);
+  _flashTimer = setTimeout(() => { el.textContent = ''; }, 4000);
+}
+
+async function renderJob() {
+  const job = await savedGet('job');
+  if (!job) { setProgress(''); return; }
+  if (job.status === 'running') {
+    setProgress(`${job.type.toUpperCase()} running · ${job.step || '…'}`, true);
+    // Disable the generate button while running
+    $('#generatePlan').disabled = (job.type === 'plan');
+    $('#refreshBacklog').disabled = (job.type === 'refresh' || job.type === 'plan');
+  } else if (job.status === 'done') {
+    const dt = ((job.done - job.since) / 1000).toFixed(1);
+    setProgress(`${job.type.toUpperCase()} done in ${dt}s.`);
+    $('#generatePlan').disabled = false;
+    $('#refreshBacklog').disabled = false;
+  } else if (job.status === 'error') {
+    setProgress(`${job.type.toUpperCase()} FAILED: ${job.error}`);
+    $('#generatePlan').disabled = false;
+    $('#refreshBacklog').disabled = false;
+  }
+}
+
+async function renderBacklog() {
+  const snap = await savedGet('snapshot');
   const tbody = $('#backlogTable tbody');
   tbody.innerHTML = '';
+  const lastBacklog  = snap && snap.backlog  || {};
+  const lastPickable = snap && snap.pickable || { totals: {} };
   PROCESS_PATHS.forEach(p => {
     const entry = lastBacklog[p.id] || {};
     const cc = entry.cartCounts || {};
     const uc = entry.unitCounts || {};
     const pickableUnits = (lastPickable.totals && lastPickable.totals[p.id]) || 0;
+    const err = entry.error ? ` <span class="muted" title="${escapeHtml(entry.error)}">⚠</span>` : '';
     const tr = document.createElement('tr');
     tr.innerHTML = `
-      <td>${p.label}</td>
+      <td>${p.label}${err}</td>
       <td class="num">${pickableUnits}</td>
       <td class="num">${cc.rebinReady ?? '–'}</td>
       <td class="num">${cc.rebinInProgress ?? '–'}</td>
@@ -167,115 +289,28 @@ async function refreshBacklog() {
     `;
     tbody.appendChild(tr);
   });
-  $('#backlogStatus').textContent = 'Updated ' + new Date().toLocaleTimeString();
-  return { backlog: lastBacklog, pickable: lastPickable };
-}
-$('#refreshBacklog').addEventListener('click', refreshBacklog);
-
-// --- Plan tab -------------------------------------------------------------
-// Module-scoped so Post-to-Slack can reuse the last plan without re-running.
-let lastPlanInput = null;
-let lastPlanOutput = null;
-
-async function generatePlan() {
-  $('#planStatus').textContent = 'Running…';
-  const warehouse = $('#warehouse').value.trim() || 'IND8';
-  const hc = parseInt($('#hc').value, 10);
-  const hoursLeft = parseFloat($('#hoursLeft').value);
-  const minDwell = parseFloat($('#minDwell').value);
-  const shift = $('#shift').value;
-
-  const expected = await getRatesMap();
-  const fresh = await refreshBacklog();
-  if (!fresh) { $('#planStatus').textContent = 'Backlog fetch failed.'; return; }
-  const { backlog, pickable } = fresh;
-
-  // Fetch the roster (rates + current assignment + dwell) from FCLM.
-  $('#planStatus').textContent = 'Loading roster…';
-  const rosterResp = await send('roster', { warehouse, shift });
-  const roster = (rosterResp && rosterResp.ok) ? rosterResp.roster : [];
-  if (!rosterResp || !rosterResp.ok) {
-    $('#planStatus').textContent = 'Roster warning: ' + (rosterResp && rosterResp.error);
+  if (snap && snap.at) {
+    const ageMin = Math.max(0, Math.round((Date.now() - snap.at) / 60000));
+    $('#backlogStatus').textContent = `Snapshot · ${ageMin} min old`;
+  } else {
+    $('#backlogStatus').textContent = 'No snapshot yet.';
   }
-
-  // Demand per path per role. Unit-based for all three roles:
-  //   demandAAHrs = unitsInReadyBacklog / expectedUPH[role][path]
-  // Cart classification already filtered to units in closed/ready carts.
-  // If a role UPH is missing, aaHoursDemand returns null -> warn the user
-  // instead of silently making the rebin/pack demand zero.
-  const demand = {};
-  const missing = [];
-  for (const p of PROCESS_PATHS) {
-    const e  = backlog[p.id] || {};
-    const uc = e.unitCounts || {};
-    const pickableUnits = (pickable.totals && pickable.totals[p.id]) || 0;
-
-    const pickHrs  = Optimizer.aaHoursDemand({ unitsBacklog: pickableUnits,        expectedUPH: expected.pick[p.id],  role: 'pick'  });
-    const rebinHrs = p.usesRebin ? Optimizer.aaHoursDemand({ unitsBacklog: uc.rebinReady || 0, expectedUPH: expected.rebin[p.id], role: 'rebin' }) : 0;
-    const packHrs  = p.usesPack  ? Optimizer.aaHoursDemand({ unitsBacklog: uc.packReady  || 0, expectedUPH: expected.pack[p.id],  role: 'pack'  }) : 0;
-
-    if (rebinHrs === null) missing.push(`${p.label} rebin`);
-    if (packHrs  === null) missing.push(`${p.label} pack`);
-
-    demand[p.id] = {
-      pickAAHrs:  pickHrs  || 0,
-      rebinAAHrs: (rebinHrs === null) ? 0 : rebinHrs,
-      packAAHrs:  (packHrs  === null) ? 0 : packHrs
-    };
-  }
-
-  // The optimizer only cares about pick UPH for AA selection; rebin/pack
-  // rates already went into demand. Flatten expected.pick for the picker.
-  const input = { hc, hoursLeft, minDwellHrs: minDwell, demand, expected: expected.pick, roster };
-  const resp = await send('optimize', { input });
-  if (!resp || !resp.ok) { $('#planStatus').textContent = 'Optimizer error.'; return; }
-
-  if (missing.length) {
-    resp.plan.warnings.unshift(`Missing role rate(s): ${missing.join(', ')} — demand for these was set to 0.`);
-  }
-
-  lastPlanInput = { warehouse, hc, hoursLeft, shift };
-  lastPlanOutput = resp.plan;
-
-  renderPlan(resp.plan.assignments, resp.plan.warnings);
-  $('#planStatus').textContent = `Plan generated · ${roster.length} AAs in roster.`;
 }
-$('#generatePlan').addEventListener('click', generatePlan);
 
-async function postToSlack() {
-  if (!lastPlanOutput) { $('#planStatus').textContent = 'Generate a plan first.'; return; }
-  $('#planStatus').textContent = 'Posting to Slack…';
-  const payload = Slack.formatPlanForSlack({
-    warehouse: lastPlanInput.warehouse,
-    hc:        lastPlanInput.hc,
-    hoursLeft: lastPlanInput.hoursLeft,
-    shift:     lastPlanInput.shift,
-    assignments: lastPlanOutput.assignments,
-    warnings:    lastPlanOutput.warnings,
-    backlog:     lastBacklog,
-    pickable:    lastPickable
-  });
-  const r = await send('slack.post', { payload });
-  $('#planStatus').textContent = r && r.ok ? 'Posted to Slack.' : ('Slack error: ' + (r && r.error));
-}
-$('#postSlack').addEventListener('click', postToSlack);
-
-// Slack webhook save (in the Rates tab).
-(async () => {
-  const r = await send('config.get', { key: 'slackWebhook', fallback: '' });
-  $('#slackWebhook').value = (r && r.value) || '';
-})();
-$('#saveSlack').addEventListener('click', async () => {
-  const v = $('#slackWebhook').value.trim();
-  await send('config.set', { key: 'slackWebhook', value: v });
-  $('#planStatus').textContent = 'Slack webhook saved.';
-});
-
-function renderPlan(assignments, warnings) {
+async function renderPlanFromStorage() {
+  const plan = await savedGet('lastPlan');
   const out = $('#planOutput');
+  const wrap = $('#planWarnings');
   out.innerHTML = '';
+  wrap.innerHTML = '';
+  if (!plan || !plan.output) {
+    out.innerHTML = '<p class="muted">No plan yet. Click "Generate plan" — you can close this popup while it runs.</p>';
+    $('#planStatus').textContent = '';
+    return;
+  }
+  const { assignments, warnings } = plan.output;
   if (!assignments.length) {
-    out.innerHTML = '<p class="muted">No assignments yet — roster feed is not wired up in v0.1.</p>';
+    out.innerHTML = `<p class="muted">No assignments. Roster returned 0 AAs — check Debug tab → "Test FCLM rollup (Pick)".</p>`;
   } else {
     const tbl = document.createElement('table');
     tbl.innerHTML = `<thead><tr>
@@ -291,37 +326,36 @@ function renderPlan(assignments, warnings) {
         <td>${a.role}</td>
         <td class="num">${a.hours.toFixed(1)}</td>
         <td class="source-${a.source}">${a.source}</td>
-        <td class="muted">${a.reason || ''}</td>
+        <td class="muted">${escapeHtml(a.reason || '')}</td>
       `;
       body.appendChild(tr);
     }
     out.appendChild(tbl);
   }
-
-  const wrap = $('#planWarnings');
-  wrap.innerHTML = '';
   for (const w of warnings) {
     const div = document.createElement('div');
     div.className = 'warning';
     div.textContent = w;
     wrap.appendChild(div);
   }
+  const ageMin = Math.max(0, Math.round((Date.now() - plan.at) / 60000));
+  $('#planStatus').textContent = `Plan · ${ageMin} min old`;
 }
 
-// --- Debug tab ------------------------------------------------------------
-$('#pingBg').addEventListener('click', async () => {
-  const r = await send('ping');
-  $('#debugOut').textContent = JSON.stringify(r, null, 2);
+async function renderFromStorage() {
+  await Promise.all([renderJob(), renderBacklog(), renderPlanFromStorage()]);
+}
+
+// Subscribe to storage changes so progress updates live while popup is open.
+api.storage.onChanged.addListener((changes, area) => {
+  if (area !== 'local') return;
+  if (changes['hc_cfg_job'])       renderJob();
+  if (changes['hc_cfg_snapshot'])  renderBacklog();
+  if (changes['hc_cfg_lastPlan'])  renderPlanFromStorage();
 });
 
-$('#testFCLM').addEventListener('click', async () => {
-  const warehouse = $('#warehouse').value.trim() || 'IND8';
-  const shift = $('#shift').value;
-  const r = await send('fclm.rollup', {
-    warehouse, processId: FCLM_PROCESS_IDS.PICK, spanType: 'Intraday', shift
-  });
-  $('#debugOut').textContent = JSON.stringify(r, null, 2).slice(0, 4000);
-});
-
-// --- Init -----------------------------------------------------------------
-renderRates();
+// ------------------------------------------------------------------- Init
+(async () => {
+  await renderRates();
+  await renderFromStorage();
+})();
