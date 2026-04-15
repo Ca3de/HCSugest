@@ -32,11 +32,12 @@ async function runRefreshJob({ warehouse, paths }) {
     const queue = paths.slice();
     const backlog = {};
     let doneCount = 0;
+    const windowDays = msg.windowDays || 3;
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
       while (queue.length) {
         const path = queue.shift();
         try {
-          backlog[path] = await Rodeo.getBacklogForPath({ warehouse, processPath: path, windowDays: 14 });
+          backlog[path] = await Rodeo.getBacklogForPath({ warehouse, processPath: path, windowDays });
         } catch (e) {
           backlog[path] = { error: String(e) };
         }
@@ -74,15 +75,24 @@ async function runPlanJob({ warehouse, hc, hoursLeft, minDwell, shift, expected 
     await write('Fetching FCLM roster + timeDetails…');
     const range = FCLM.shiftRange(shift || 'day');
     const parents = [FCLM_PROCESS_IDS.PICK, FCLM_PROCESS_IDS.PACK, FCLM_PROCESS_IDS.STOW];
-    const parentResults = await Promise.all(parents.map(async pid => {
-      try {
-        const rows = await FCLM.fetchFunctionRollup({
-          warehouseId: warehouse, processId: pid, spanType: 'Intraday', range
-        });
-        return rows.map(r => ({ ...r, parentProcessId: pid }));
-      } catch (e) { return []; }
-    }));
-    const allRows = parentResults.flat();
+    // FCLM doesn't tolerate 3 simultaneous requests from one session well
+    // (observed: NetworkError on all 3 when fired in parallel). Performance-
+    // validity serializes with backoff retry for 429s — we do the same here.
+    const allRows = [];
+    for (const pid of parents) {
+      let attempt = 0, got = null;
+      while (attempt < 3 && !got) {
+        try {
+          got = await FCLM.fetchFunctionRollup({
+            warehouseId: warehouse, processId: pid, spanType: 'Intraday', range
+          });
+        } catch (e) {
+          attempt++;
+          if (attempt < 3) await new Promise(r => setTimeout(r, 800 * attempt));
+        }
+      }
+      if (got) for (const r of got) allRows.push({ ...r, parentProcessId: pid });
+    }
     // functionRollup exposes badgeId, not login. Key the roster by badge.
     // (timeDetails also accepts employeeId/badge, so this is the right key.)
     const byBadge = {};
