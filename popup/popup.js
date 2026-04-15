@@ -344,13 +344,22 @@ async function renderBacklog() {
     const entry = lastBacklog[p.id] || {};
     const cc = entry.cartCounts || {};
     const uc = entry.unitCounts || {};
+    const breakdown = entry.stateBreakdown || {};
+    const totalSeen = entry.totalBatchesSeen || 0;
     const pickableUnits = (lastPickable.totals && lastPickable.totals[p.id]) || 0;
     const err = entry.error ? ` <span class="muted" title="${escapeHtml(entry.error)}">⚠</span>` : '';
+    // Tooltip on the rebin-ready cell shows the full classifier breakdown —
+    // rebin-ready is a subset of PickingPicked batches. If it's higher than
+    // your physical count, check this to see what else got classified.
+    const breakdownTooltip = totalSeen
+      ? `Of ${totalSeen} batches seen across PickingPicked + Sorted: ` +
+        Object.entries(breakdown).filter(([,v]) => v > 0).map(([k,v]) => `${k}=${v}`).join(', ')
+      : '';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${p.label}${err}</td>
       <td class="num">${pickableUnits}</td>
-      <td class="num">${cc.rebinReady ?? '–'}</td>
+      <td class="num" title="${escapeHtml(breakdownTooltip)}">${cc.rebinReady ?? '–'}</td>
       <td class="num">${cc.rebinInProgress ?? '–'}</td>
       <td class="num">${cc.packReady ?? '–'}</td>
       <td class="num">${uc.rebinReady ?? '–'}</td>
