@@ -44,6 +44,12 @@
     }
   },
 
+  "web_accessible_resources": [
+    "dashboard/dashboard.html",
+    "dashboard/dashboard.css",
+    "dashboard/dashboard.js"
+  ],
+
   "icons": {
     "16": "icons/icon.svg",
     "32": "icons/icon.svg",

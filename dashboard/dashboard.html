@@ -1,0 +1,116 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>HC Suggest</title>
+<link rel="stylesheet" href="dashboard.css">
+</head>
+<body class="fullpage">
+
+<header>
+  <h1>HC Suggest</h1>
+  <span id="shiftPill" class="pill">Day · IND8</span>
+</header>
+
+<nav class="tabs">
+  <button class="tab active" data-tab="plan">Plan</button>
+  <button class="tab" data-tab="backlog">Backlog</button>
+  <button class="tab" data-tab="rates">Rates</button>
+  <button class="tab" data-tab="debug">Debug</button>
+</nav>
+
+<!-- Plan tab ------------------------------------------------------------- -->
+<section class="tab-panel active" data-panel="plan">
+  <div class="row">
+    <label>Warehouse <input id="warehouse" type="text" value="IND8" size="5"></label>
+    <label>HC <input id="hc" type="number" value="25" min="1" max="200"></label>
+    <label>Hours left <input id="hoursLeft" type="number" value="8" min="1" max="12" step="0.5"></label>
+    <label>Shift
+      <select id="shift">
+        <option value="day" selected>Day (06-18)</option>
+        <option value="night">Night (18-06)</option>
+      </select>
+    </label>
+    <label>Min dwell (h) <input id="minDwell" type="number" value="5" min="0" max="10" step="0.5"></label>
+  </div>
+  <div class="row">
+    <button id="generatePlan">Generate plan</button>
+    <button id="postSlack" class="secondary">Post to Slack</button>
+    <span id="planStatus" class="muted"></span>
+  </div>
+  <div id="planProgress" class="progress"></div>
+  <div id="planOutput"></div>
+  <div id="planWarnings"></div>
+</section>
+
+<!-- Backlog tab ---------------------------------------------------------- -->
+<section class="tab-panel" data-panel="backlog">
+  <div class="row">
+    <button id="refreshBacklog">Refresh from Rodeo</button>
+    <span id="backlogStatus" class="muted"></span>
+  </div>
+  <table id="backlogTable">
+    <thead><tr>
+      <th>Path</th>
+      <th class="num">Pickable units</th>
+      <th class="num">Rebin-ready carts</th>
+      <th class="num">Rebin in-progress</th>
+      <th class="num">Pack-ready carts</th>
+      <th class="num">Rebin units</th>
+      <th class="num">Pack units</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+</section>
+
+<!-- Rates tab ------------------------------------------------------------ -->
+<section class="tab-panel" data-panel="rates">
+  <p class="muted">
+    Weekly expected UPH per path per role. Pick seeds from the IND8 Pick
+    Staffing v1.9 workbook; Rebin and Pack (MultiSlam + Single only) start
+    empty — fill them in or pull from FCLM.
+  </p>
+  <table id="ratesTable">
+    <thead><tr>
+      <th>Path</th>
+      <th class="num">Pick UPH</th>
+      <th class="num">Rebin UPH</th>
+      <th class="num">Pack UPH</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+  <div class="row">
+    <button id="saveRates">Save rates</button>
+    <button id="resetRates" class="secondary">Reset to defaults</button>
+    <button id="pullWeekly" class="secondary">Pull weekly rates from FCLM</button>
+  </div>
+  <div id="weeklyRatesOut"></div>
+
+  <hr>
+  <p class="muted">
+    Slack integration. Paste an Incoming Webhook URL from your workspace;
+    the "Post to Slack" button on the Plan tab sends the current plan.
+  </p>
+  <div class="row">
+    <label style="flex:1;">Webhook URL
+      <input id="slackWebhook" type="text" placeholder="https://hooks.slack.com/services/…" style="width:100%;">
+    </label>
+  </div>
+  <button id="saveSlack">Save webhook</button>
+</section>
+
+<!-- Debug tab ------------------------------------------------------------ -->
+<section class="tab-panel" data-panel="debug">
+  <div class="row">
+    <button id="pingBg">Ping background</button>
+    <button id="testFCLM">Test FCLM rollup (Pick)</button>
+  </div>
+  <pre id="debugOut"></pre>
+</section>
+
+<script src="../lib/paths.js"></script>
+<script src="../lib/optimizer.js"></script>
+<script src="../lib/slack.js"></script>
+<script src="dashboard.js"></script>
+</body>
+</html>

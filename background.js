@@ -8,19 +8,26 @@ async function handle(msg) {
       return { ok: true, at: Date.now() };
 
     case 'rodeo.backlog': {
-      // msg.warehouse, msg.paths (array of process path ids)
+      // Parallelize across paths with bounded concurrency. 3 paths at a
+      // time × each path opens 2 pool requests + ~6 concurrent batch reqs.
+      const CONCURRENCY = 3;
+      const paths = msg.paths.slice();
       const out = {};
-      for (const path of msg.paths) {
-        try {
-          out[path] = await Rodeo.getBacklogForPath({
-            warehouse: msg.warehouse,
-            processPath: path,
-            windowDays: msg.windowDays || 14
-          });
-        } catch (e) {
-          out[path] = { error: String(e) };
+      const workers = Array.from({ length: Math.min(CONCURRENCY, paths.length) }, async () => {
+        while (paths.length) {
+          const path = paths.shift();
+          try {
+            out[path] = await Rodeo.getBacklogForPath({
+              warehouse: msg.warehouse,
+              processPath: path,
+              windowDays: msg.windowDays || 14
+            });
+          } catch (e) {
+            out[path] = { error: String(e) };
+          }
         }
-      }
+      });
+      await Promise.all(workers);
       return { ok: true, backlog: out };
     }
 
@@ -41,17 +48,17 @@ async function handle(msg) {
       const warehouse = msg.warehouse;
       const range = FCLM.shiftRange(msg.shift || 'day');
       const parents = [FCLM_PROCESS_IDS.PICK, FCLM_PROCESS_IDS.PACK, FCLM_PROCESS_IDS.STOW];
-      const allRows = [];
-      for (const pid of parents) {
+      const parentResults = await Promise.all(parents.map(async pid => {
         try {
           const rows = await FCLM.fetchFunctionRollup({
             warehouseId: warehouse, processId: pid, spanType: 'Intraday', range
           });
-          for (const r of rows) allRows.push({ ...r, parentProcessId: pid });
+          return rows.map(r => ({ ...r, parentProcessId: pid }));
         } catch (e) {
-          // Skip this parent if FCLM chokes; we still produce a partial roster.
+          return []; // skip this parent on error
         }
-      }
+      }));
+      const allRows = parentResults.flat();
       // Group rate history by login -> subFunction.
       const byLogin = {};
       for (const r of allRows) {
