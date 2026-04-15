@@ -19,7 +19,7 @@ async function setJob(j) {
 }
 
 // ----------------------------------------------------- Refresh (backlog) job
-async function runRefreshJob({ warehouse, paths }) {
+async function runRefreshJob({ warehouse, paths, windowDays = 3 }) {
   const since = Date.now();
   const jobId = 'r-' + since;
   const write = step => setJob({ id: jobId, type: 'refresh', status: 'running', step, since });
@@ -32,7 +32,6 @@ async function runRefreshJob({ warehouse, paths }) {
     const queue = paths.slice();
     const backlog = {};
     let doneCount = 0;
-    const windowDays = msg.windowDays || 3;
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, async () => {
       while (queue.length) {
         const path = queue.shift();
