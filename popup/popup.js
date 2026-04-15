@@ -216,6 +216,45 @@ $('#clearCache').addEventListener('click', async () => {
   await renderFromStorage();
 });
 
+async function renderSamples() {
+  const samples = (await savedGet('debugSamples')) || [];
+  const out = $('#samplesOut');
+  if (!samples.length) {
+    out.innerHTML = '<p class="muted">No samples yet. Click "Refresh from Rodeo" on Backlog, or "Generate plan" on Plan. Every fetch records its response here.</p>';
+    return;
+  }
+  out.innerHTML = samples.map((s, i) => {
+    const age = Math.round((Date.now() - s.at) / 1000);
+    const looksLikeLogin = /midway|login|saml|auth/i.test(s.preview || '');
+    const summary = s.parseSummary
+      ? '<pre>' + escapeHtml(JSON.stringify(s.parseSummary, null, 2)) + '</pre>'
+      : '';
+    const warnBadge = s.error
+      ? `<span class="warning" style="display:inline-block">${escapeHtml(s.error)}</span>`
+      : looksLikeLogin
+        ? '<span class="warning" style="display:inline-block">Looks like a Midway login page — re-auth to FCLM/Rodeo in a normal tab first.</span>'
+        : '';
+    return `
+      <details style="margin-bottom:8px;">
+        <summary><strong>${escapeHtml(s.kind)}</strong> · ${s.status} · ${s.size}b · ${age}s ago ${warnBadge}</summary>
+        <p class="muted" style="word-break:break-all">${escapeHtml(s.url)}</p>
+        ${summary}
+        <pre>${escapeHtml((s.preview || '').slice(0, 4000))}</pre>
+      </details>`;
+  }).join('');
+}
+
+$('#refreshSamples').addEventListener('click', renderSamples);
+$('#copySamples').addEventListener('click', async () => {
+  const samples = (await savedGet('debugSamples')) || [];
+  await navigator.clipboard.writeText(JSON.stringify(samples, null, 2));
+  flashStatus(`Copied ${samples.length} samples.`);
+});
+$('#clearSamples').addEventListener('click', async () => {
+  await send('config.set', { key: 'debugSamples', value: [] });
+  await renderSamples();
+});
+
 // --------------------------------------------------- Render from storage
 // Single source of truth: storage.local. Called on page load, and on any
 // storage.onChanged for our keys.
@@ -349,13 +388,15 @@ async function renderFromStorage() {
 // Subscribe to storage changes so progress updates live while popup is open.
 api.storage.onChanged.addListener((changes, area) => {
   if (area !== 'local') return;
-  if (changes['hc_cfg_job'])       renderJob();
-  if (changes['hc_cfg_snapshot'])  renderBacklog();
-  if (changes['hc_cfg_lastPlan'])  renderPlanFromStorage();
+  if (changes['hc_cfg_job'])          renderJob();
+  if (changes['hc_cfg_snapshot'])     renderBacklog();
+  if (changes['hc_cfg_lastPlan'])     renderPlanFromStorage();
+  if (changes['hc_cfg_debugSamples']) renderSamples();
 });
 
 // ------------------------------------------------------------------- Init
 (async () => {
   await renderRates();
   await renderFromStorage();
+  await renderSamples();
 })();

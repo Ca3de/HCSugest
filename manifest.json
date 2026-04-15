@@ -25,6 +25,7 @@
     "scripts": [
       "lib/paths.js",
       "lib/cache.js",
+      "lib/debug.js",
       "lib/rodeo.js",
       "lib/fclm.js",
       "lib/optimizer.js",
