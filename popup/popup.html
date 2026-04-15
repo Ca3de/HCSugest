@@ -102,12 +102,21 @@
 
 <!-- Debug tab ------------------------------------------------------------ -->
 <section class="tab-panel" data-panel="debug">
+  <p class="muted">
+    Each fetch to FCLM / Rodeo saves its response here so you can see what's
+    actually coming back. If a response is an Amazon login redirect, a
+    404 page, or HTML the parser doesn't understand, it'll show up below.
+  </p>
   <div class="row">
     <button id="pingBg">Ping background</button>
     <button id="testFCLM">Test FCLM rollup (Pick)</button>
+    <button id="refreshSamples" class="secondary">Refresh samples</button>
+    <button id="copySamples" class="secondary">Copy all samples JSON</button>
+    <button id="clearSamples" class="secondary">Clear samples</button>
     <button id="clearCache" class="secondary">Clear cached snapshot</button>
   </div>
   <pre id="debugOut"></pre>
+  <div id="samplesOut"></div>
 </section>
 
 <script src="../lib/paths.js"></script>
