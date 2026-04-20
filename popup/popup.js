@@ -355,13 +355,20 @@ async function renderBacklog() {
       ? `Of ${totalSeen} batches seen across PickingPicked + Sorted: ` +
         Object.entries(breakdown).filter(([,v]) => v > 0).map(([k,v]) => `${k}=${v}`).join(', ')
       : '';
+    // Show batch IDs for rebin-ready and pack-ready so user can cross-check on the floor
+    const rebinIds = (entry.rebinReady || []).map(b => b.batchId).filter(Boolean);
+    const packIds  = (entry.packReady  || []).map(b => b.batchId).filter(Boolean);
+    const rebinIdList = rebinIds.length
+      ? `<div class="muted" style="font-size:10px;margin-top:2px">${rebinIds.join(', ')}</div>` : '';
+    const packIdList = packIds.length
+      ? `<div class="muted" style="font-size:10px;margin-top:2px">${packIds.join(', ')}</div>` : '';
     const tr = document.createElement('tr');
     tr.innerHTML = `
       <td>${p.label}${err}</td>
       <td class="num">${pickableUnits}</td>
-      <td class="num" title="${escapeHtml(breakdownTooltip)}">${cc.rebinReady ?? '–'}</td>
+      <td class="num" title="${escapeHtml(breakdownTooltip)}">${cc.rebinReady ?? '–'}${rebinIdList}</td>
       <td class="num">${cc.rebinInProgress ?? '–'}</td>
-      <td class="num">${cc.packReady ?? '–'}</td>
+      <td class="num">${cc.packReady ?? '–'}${packIdList}</td>
       <td class="num">${uc.rebinReady ?? '–'}</td>
       <td class="num">${uc.packReady ?? '–'}</td>
     `;
